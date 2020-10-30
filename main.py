@@ -1,8 +1,8 @@
-#-*- coding: utf-8 -*-
 import json
+import time
 import string
 import math
-from konlpy.tag import Mecab
+from konlpy.tag import Okt
 import discord
 
 
@@ -18,8 +18,27 @@ class qData:
         self.query = query
         self.terms = konlpy.nouns(curString)
         self.termDataDict = dict()
+        self.wvById = []
+        self.rankedID = []
         for termItem in self.terms:
             self.termDataDict[termItem] = TermData(termItem)
+
+    def calWeightVector(self, table):
+        for idWeight in table:
+            isInFlag = False
+            for rawWV in self.wvById:
+                if idWeight[0] in rawWV:
+                    rawWV[1] += pow(idWeight[1], 2)
+                    isInFlag = True
+            if not isInFlag:
+                self.wvById.append([idWeight[0], pow(idWeight[1], 2)])
+
+    def calRank(self):
+        for wvPair in self.wvById:
+            wvPair[1] = math.sqrt(wvPair[1])
+        self.wvById.sort(key=lambda x: -x[1])
+        for wvPair in self.wvById:
+            self.rankedID.append(wvPair[0])
 
 
 class InvIndex:  # inverted index 자료구조
@@ -30,9 +49,9 @@ class InvIndex:  # inverted index 자료구조
     def getTfIdfTable(self, term):
         table = []
         for docID in self.myTermNode[term].myDocTFDict.keys():
-            table.append([docID, self.getTf(term, docID) * self.getIdf(term)])
-        table.sort(key=lambda element: element[1])
-        return table[:10]
+            table.append((docID, self.getTf(term, docID) * self.getIdf(term)))
+        table.sort(key=lambda x: -x[1])
+        return table
 
     def getTf(self, term, docID):
         if docID not in self.myTermNode[term].myDocTFDict:
@@ -42,13 +61,29 @@ class InvIndex:  # inverted index 자료구조
     def getIdf(self, term):
         return math.log10(self.myTermNode[term].idf)
 
+    def addTitleTerm(self, term, docId):
+        if term in self.myTermNode:
+            rootTN = self.myTermNode[term]
+            curTN = rootTN.tail
+            curDocId = curTN.docId
+            if curDocId == docId:
+                if docId in rootTN.myDocTFDict:
+                    rootTN.myDocTFDict[docId] += 100
+                else:
+                    rootTN.myDocTFDict[docId] = 100
+                return
+            rootTN.freq += 1
+            curTN.nxt.append(Node(docId))
+            rootTN.tail = curTN.nxt[0]
+        else:
+            self.myTermNode[term] = TermNode(term, docId)
+            self.myTermNode[term].myDocTFDict[docId] = 1
+
     def addTerm(self, term, docId):
         if term in self.myTermNode:
-            curTN = self.myTermNode[term]
             rootTN = self.myTermNode[term]
-            while len(curTN.nxt) != 0:
-                curDocId = curTN.nxt[0].docId
-                curTN = curTN.nxt[0]
+            curTN = rootTN.tail
+            curDocId = curTN.docId
             if curDocId == docId:
                 if docId in rootTN.myDocTFDict:
                     rootTN.myDocTFDict[docId] += 1
@@ -57,6 +92,7 @@ class InvIndex:  # inverted index 자료구조
                 return
             rootTN.freq += 1
             curTN.nxt.append(Node(docId))
+            rootTN.tail = curTN.nxt[0]
         else:
             self.myTermNode[term] = TermNode(term, docId)
             self.myTermNode[term].myDocTFDict[docId] = 1
@@ -78,6 +114,7 @@ class TermNode:  # term 과 freq, docID 를 가지는 시작 노드
         self.idf = -1.0
         self.nxt = []
         self.nxt.append(Node(docId))
+        self.tail = self.nxt[0]
 
 
 class Node:  # 시작 노드에 덧붙이는 노드들
@@ -86,17 +123,58 @@ class Node:  # 시작 노드에 덧붙이는 노드들
         self.nxt = []
 
 
+def calPathByDocID(docID):
+    path = rootPath
+    position = calPosByDocID(docID)
+    # 100 단위로 AA AB AC 나뉨
+    # 1 단위로 wiki_00 wiki_01 wiki_03 나뉨
+    dirPos = int(position / 100)
+    filePos = position % 100
+    if dirPos == 0:
+        path += 'AA'
+    if dirPos == 1:
+        path += 'AB'
+    if dirPos == 2:
+        path += 'AC'
+    if dirPos == 3:
+        path += 'AD'
+    if dirPos == 4:
+        path += 'AE'
+    if dirPos == 5:
+        path += 'AF'
+    if dirPos == 6:
+        path += 'AG'
+    if dirPos == 7:
+        path += 'AH'
+    if filePos < 10:
+        path += '\\wiki_0' + str(filePos)
+    else:
+        path += '\\wiki_' + str(filePos)
+    return path
+
+
+def calPosByDocID(docID):
+    index = 0
+    intDocID = int(docID)
+    for lastDocID in lastID:
+        if intDocID <= lastDocID:
+            return index
+        index += 1
+
+
 cnt = 0
-konlpy = Mecab()
+konlpy = Okt()
 invIndex = InvIndex()
+lastID = []
 
 ''' ------------ file 읽어와서 처리 -------------- '''
 
 
-def loadfile(path):
+def loadFileToInvInd(path):
     global konlpy
     global invIndex
-    curString = u'현재 스트링'
+    global lastID
+
     try:
         with open(path, encoding='UTF8') as f:
             for line in f:
@@ -105,22 +183,43 @@ def loadfile(path):
                 curString = data['title']
                 titleNounData = konlpy.nouns(curString)
                 for textItem in titleNounData:
-                    invIndex.addTerm(textItem, data['id'])
+                    invIndex.addTitleTerm(textItem, data['id'])
                 curString = data['text']
                 nounData = konlpy.nouns(curString)
                 for textItem in nounData:
                     invIndex.addTerm(textItem, data['id'])
+        lastID.append(int(data['id']))
 
     except FileNotFoundError:
-        print("there is no file: %s" % cur)
+        print("there is no file: %s" % path)
+
+
+def loadFileToEmbed(path, docId):
+    try:
+        with open(path, encoding='UTF8') as f:
+            for line in f:
+                data = json.loads(line)
+                if docId != data['id']:
+                    continue
+                if len(data['text']) < 100:
+                    embed = discord.Embed(title=data['title'], description=data['text'], color=0x00ff56)
+                else:
+                    embed = discord.Embed(title=data['title'], description=data['text'][:100] + '...', color=0x00ff56)
+                embed.add_field(name='url', value=data['url'], inline=False)
+                return embed
+
+    except FileNotFoundError:
+        print("there is no file: %s" % path)
 
 
 ''' -----------------------메인 코드 실행부-------------------------- '''
 
+global rootPath
 rootPath = '.\corpus\\'
 letters = list(string.ascii_uppercase)
 letters.extend([i + b for i in letters for b in letters])
 
+cur = rootPath
 # for item in letters:   # 전체일때
 for item in {'AA'}:  # AA폴더 안에만
     if len(item) < 2:
@@ -128,8 +227,8 @@ for item in {'AA'}:  # AA폴더 안에만
     if item == 'AI':
         break
     dirPath = rootPath + item + '\wiki_'
-    for num in range(100): # 전체일때
-    #for num in range(1):  # wiki_00만
+    # for num in range(100): # 전체일때
+    for num in range(3):  # wiki_00, wiki_01 만
         if item == 'AH' and num > 6:
             break
         if num < 10:
@@ -138,7 +237,7 @@ for item in {'AA'}:  # AA폴더 안에만
             cur = dirPath + str(num)
 
         print('%s 파일 로드중...' % cur)
-        loadfile(cur)
+        loadFileToInvInd(cur)
 
 print('idf 값 계산중...')
 invIndex.calIdf()
@@ -165,8 +264,9 @@ async def on_ready():
 
 @client.event
 async def on_message(message):
-    if message.content.startswith('!검색'):
-        query = message.content[3:]
+    if message.content.startswith('!!검색'):
+        start = time.time()
+        query = message.content[4:]
         if len(query) == 0:
             await message.channel.send('검색어를 입력하세요...')
             return
@@ -176,8 +276,17 @@ async def on_message(message):
         curQD = qIdDict[message.id]
         for term in curQD.terms:
             TD = curQD.termDataDict[term]
-            print(TD.weightTable[:10])
+            curQD.calWeightVector(TD.weightTable)
             await message.channel.send(term)
+        curQD.calRank()
+        cnt = 0
+        for docID in curQD.rankedID:
+            embed = loadFileToEmbed(calPathByDocID(docID), docID)
+            await message.channel.send(embed=embed)
+            cnt += 1
+            if cnt == 10:
+                break
+        await message.channel.send('걸린 시간: '+str(time.time()-start)+'초')
 
 
 client.run('NzcxMjM1NjY1NzM1ODQzODQw.X5pLLw.CdQpT-Mx96X0NxchT2mKFPGfutM')
