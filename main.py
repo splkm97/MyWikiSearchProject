@@ -20,6 +20,7 @@ class qData:
         self.termDataDict = dict()
         self.wvById = []
         self.rankedID = []
+        self.rankedWV = []
         for termItem in self.terms:
             self.termDataDict[termItem] = TermData(termItem)
 
@@ -39,6 +40,7 @@ class qData:
         self.wvById.sort(key=lambda x: -x[1])
         for wvPair in self.wvById:
             self.rankedID.append(wvPair[0])
+            self.rankedWV.append(wvPair[1])
 
 
 class InvIndex:  # inverted index 자료구조
@@ -48,9 +50,10 @@ class InvIndex:  # inverted index 자료구조
 
     def getTfIdfTable(self, term):
         table = []
-        for docID in self.myTermNode[term].myDocTFDict.keys():
-            table.append((docID, self.getTf(term, docID) * self.getIdf(term)))
-        table.sort(key=lambda x: -x[1])
+        if term in self.myTermNode:
+            for docID in self.myTermNode[term].myDocTFDict.keys():
+                table.append((docID, self.getTf(term, docID) * self.getIdf(term)))
+            table.sort(key=lambda x: -x[1])
         return table
 
     def getTf(self, term, docID):
@@ -106,7 +109,7 @@ class InvIndex:  # inverted index 자료구조
             curTN.idf = self.numOfTerms / curTN.freq
 
 
-class TermNode:  # term 과 freq, docID 를 가지는 시작 노드
+class TermNode:  # term 과 freq, docID, docID 별 tf 값을 가지는 시작 노드
     def __init__(self, term, docId):
         self.term = term
         self.myDocTFDict = dict()
@@ -162,7 +165,6 @@ def calPosByDocID(docID):
         index += 1
 
 
-cnt = 0
 konlpy = Okt()
 invIndex = InvIndex()
 lastID = []
@@ -194,7 +196,7 @@ def loadFileToInvInd(path):
         print("there is no file: %s" % path)
 
 
-def loadFileToEmbed(path, docId):
+def getStrsFromFile(path, docId):
     try:
         with open(path, encoding='UTF8') as f:
             for line in f:
@@ -202,14 +204,16 @@ def loadFileToEmbed(path, docId):
                 if docId != data['id']:
                     continue
                 if len(data['text']) < 100:
-                    embed = discord.Embed(title=data['title'], description=data['text'], color=0x00ff56)
+                    text = data['text']
+                    url = data['url']
                 else:
-                    embed = discord.Embed(title=data['title'], description=data['text'][:100] + '...', color=0x00ff56)
-                embed.add_field(name='url', value=data['url'], inline=False)
-                return embed
+                    text = data['text'][:100] + '...'
+                    url = data['url']
+                return text, url
 
     except FileNotFoundError:
         print("there is no file: %s" % path)
+        return '파일이 존재하지 않습니다.', '해당 검색어에 해당하는 문서가 없습니다.'
 
 
 ''' -----------------------메인 코드 실행부-------------------------- '''
@@ -228,7 +232,7 @@ for item in {'AA'}:  # AA폴더 안에만
         break
     dirPath = rootPath + item + '\wiki_'
     # for num in range(100): # 전체일때
-    for num in range(3):  # wiki_00, wiki_01 만
+    for num in range(1):  # wiki_00, wiki_01 만
         if item == 'AH' and num > 6:
             break
         if num < 10:
@@ -270,23 +274,33 @@ async def on_message(message):
         if len(query) == 0:
             await message.channel.send('검색어를 입력하세요...')
             return
-        await message.channel.send('검색어: %s' % query)
-
         qIdDict[message.id] = qData(query)
         curQD = qIdDict[message.id]
         for term in curQD.terms:
-            TD = curQD.termDataDict[term]
-            curQD.calWeightVector(TD.weightTable)
-            await message.channel.send(term)
+            if term in curQD.termDataDict:
+                TD = curQD.termDataDict[term]
+                curQD.calWeightVector(TD.weightTable)
         curQD.calRank()
         cnt = 0
+        embed = discord.Embed(title='*%s* 의 검색결과' % query, color=0x00ff56)
         for docID in curQD.rankedID:
-            embed = loadFileToEmbed(calPathByDocID(docID), docID)
-            await message.channel.send(embed=embed)
+            text, url = getStrsFromFile(calPathByDocID(docID), docID)
+            if cnt == 0:
+                isNotFirst = False
+            else:
+                isNotFirst = True
+            embed.add_field(name='\n%d번 검색결과: %s' % (cnt+1, url),
+                            value='%s\n랭크값: %f\n' % (text, curQD.rankedWV[cnt]),
+                            inline= isNotFirst)
             cnt += 1
             if cnt == 10:
                 break
-        await message.channel.send('걸린 시간: '+str(time.time()-start)+'초')
+        if cnt == 0:
+            embed.add_field(name='검색 결과가 없습니다.', value='다른 검색어를 입력해보세요')
+        await message.channel.send(embed=embed)
+        finTime = time.time()
+        await message.channel.send('걸린 시간: '+str(finTime-start)+'초')
 
-
-client.run('NzcxMjM1NjY1NzM1ODQzODQw.X5pLLw.CdQpT-Mx96X0NxchT2mKFPGfutM')
+tokenfile = open("./token.txt", 'r')
+token = tokenfile.readline()
+client.run(token)
